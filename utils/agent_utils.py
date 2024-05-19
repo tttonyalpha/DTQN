@@ -1,5 +1,5 @@
-from dtqn.agents import DtqnAgent, DrqnAgent, DqnAgent, AdrqnAgent
-from dtqn.networks import DTQN, DRQN, DQN, ADRQN, DARQN, ATTN
+from dtqn.agents import TdpgAgent, DtqnAgent, DrqnAgent, DqnAgent, AdrqnAgent
+from dtqn.networks import TDPG, DTQN, DRQN, DQN, ADRQN, DARQN, ATTN
 import torch.optim as optim
 from utils import env_processing, epsilon_anneal
 import gym
@@ -9,6 +9,7 @@ import numpy as np
 
 MODEL_MAP = {
     "DTQN": DTQN,
+    "TDPG": TDPG, # transformer deeep policy gradient 
     "DRQN": DRQN,
     "DQN": DQN,
     "ADRQN": ADRQN,
@@ -90,17 +91,43 @@ def get_agent(
             vocab_sizes=obs_vocab_size,
         ).to(device)
 
+    def make_tdpg(network_cls):
+        return network_cls(
+            env_obs_length,
+            env.action_space.n,
+            embed_per_obs_dim,
+            inner_embed,
+            num_heads,
+            num_layers,
+            context_len,
+            dropout=dropout,
+            gate=gate,
+            identity=identity,
+            pos=pos,
+            discrete=is_discrete_env,
+            vocab_sizes=obs_vocab_size,
+        ).to(device)
+
+
     if "ATTN" in model_str:
         policy_net = make_attn(MODEL_MAP[model_str])
         target_net = make_attn(MODEL_MAP[model_str])
     elif "DTQN" in model_str:
         policy_net = make_dtqn(MODEL_MAP[model_str])
         target_net = make_dtqn(MODEL_MAP[model_str])
+    elif "TDPG" in model_str:
+        policy_net = make_tdpg(MODEL_MAP[model_str])
+        target_net = make_tdpg(MODEL_MAP[model_str])
     else:
         policy_net = make_model(MODEL_MAP[model_str])
         target_net = make_model(MODEL_MAP[model_str])
 
-    optimizer = optim.Adam(policy_net.parameters(), lr=learning_rate)
+    if "TDPG" in model_str:
+        critic_optimizer = optim.Adam(policy_net.parameters(), lr=learning_rate)
+        actor_optimizer = optim.Adam(policy_net.parameters(), lr=learning_rate)
+    else: 
+        optimizer = optim.Adam(policy_net.parameters(), lr=learning_rate)
+
     epsilon_schedule = epsilon_anneal.LinearAnneal(1.0, 0.1, total_steps // 10)
 
     if MODEL_MAP[model_str] in (ADRQN,):
@@ -156,6 +183,22 @@ def get_agent(
             target_net,
             buffer_size,
             optimizer,
+            device,
+            env_obs_length,
+            epsilon_schedule,
+            batch_size=batch_size,
+            context_len=context_len,
+            history=history,
+        )
+    elif MODEL_MAP[model_str] in (TDPG,):
+        agent = TdpgAgent(
+            env,
+            eval_env,
+            policy_net,
+            target_net,
+            buffer_size,
+            critic_optimizer,
+            actor_optimizer,
             device,
             env_obs_length,
             epsilon_schedule,

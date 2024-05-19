@@ -9,12 +9,12 @@ import gym
 from gym import spaces
 import time
 import random
-# import rlbench.gym
+
 
 DEFAULT_CONTEXT_LEN = 50
 
 
-class DtqnAgent(DqnAgent):
+class TdpgAgent(DqnAgent):
     def __init__(
         self,
         env: gym.Env,
@@ -22,7 +22,8 @@ class DtqnAgent(DqnAgent):
         policy_network,
         target_network,
         buf_size: int,
-        optimizer: torch.optim.Optimizer,
+        critic_optimizer: torch.optim.Optimizer,
+        actor_optimizer: torch.optim.Optimizer,
         device: torch.device,
         env_obs_length: int,
         exp_coef: epsilon_anneal.LinearAnneal,
@@ -50,13 +51,14 @@ class DtqnAgent(DqnAgent):
                     f"`gym.wrappers.TimeLimit` wrapper"
                 )
 
+
         super().__init__(
             env,
             eval_env,
             policy_network,
             target_network,
             buf_size,
-            optimizer,
+            critic_optimizer, # don't matter
             device,
             env_obs_length,
             exp_coef,
@@ -262,18 +264,27 @@ class DtqnAgent(DqnAgent):
     def get_action(self, history, epsilon=0.0) -> int:
         """Use policy network to get an e-greedy action given the current obs"""
         if np.random.rand() < epsilon:
-            return np.random.randint(self.env.action_space.n)
+            return np.random.randint(self.env.action_space.n) # FIX HERE FOR RL_BENCH
         else:
-            # the policy network gets [1, timestep+1 x obs length] as input and
-            # outputs [1, timestep+1 x 4 outputs]
-            q_values = self.policy_network(
+            # # the policy network gets [1, timestep+1 x obs length] as input and
+            # # outputs [1, timestep+1 x 4 outputs]
+            # q_values = self.policy_network(
+            #     torch.as_tensor(
+            #         history, dtype=self.obs_tensor_type, device=self.device
+            #     ).unsqueeze(0)
+            # )
+            # # We take the argmax of the last timestep's Q values
+            # # In other words, select the highest q value action
+            # return torch.argmax(q_values[:, -1, :]).item()
+
+            acions = self.policy_network.predict_actions(
                 torch.as_tensor(
                     history, dtype=self.obs_tensor_type, device=self.device
                 ).unsqueeze(0)
             )
-            # We take the argmax of the last timestep's Q values
-            # In other words, select the highest q value action
-            return torch.argmax(q_values[:, -1, :]).item()
+
+            return acions[:, -1, :].item()
+
 
     def train(self) -> None:
         if not self.replay_buffer.can_sample(self.batch_size):
@@ -289,9 +300,7 @@ class DtqnAgent(DqnAgent):
         ) = self.replay_buffer.sample(self.batch_size)
         # Obss and Next obss: [batch-size x hist-len x obs-dim]
         obss = torch.as_tensor(obss, dtype=self.obs_tensor_type, device=self.device)
-        next_obss = torch.as_tensor(
-            next_obss, dtype=self.obs_tensor_type, device=self.device
-        )
+        next_obss = torch.as_tensor(next_obss, dtype=self.obs_tensor_type, device=self.device)
         # Actions: [batch-size x hist-len x 1]
         actions = torch.as_tensor(actions, dtype=torch.long, device=self.device)
         # Rewards: [batch-size x hist-len x 1]
@@ -299,34 +308,54 @@ class DtqnAgent(DqnAgent):
         # Dones: [batch-size x hist-len x 1]
         dones = torch.as_tensor(dones, dtype=torch.long, device=self.device)
 
-        # obss is [batch-size x hist-len x obs-len]
-        # then q_values is [batch-size x hist-len x n-actions]
-        q_values = self.policy_network(obss)
 
-        # After gathering, Q values becomes [batch-size x hist-len x 1] then
+
+
+
+
+
+        # obss is [batch-size x hist-len x obs-len]
+        # then q_values is [batch-size x hist-len x 1]
         # after squeeze becomes [batch-size x hist-len]
+
         if self.history:
-            q_values = q_values.gather(2, actions).squeeze()
+            q_values = self.policy_network.predict_q_values(obss, actions).squeeze()
         else:
-            q_values = q_values[:, -1, :].gather(1, actions[:, -1, :]).squeeze()
+            q_values = self.policy_network.predict_q_values(obss, actions)[:, -1, :].squeeze()
+
+
+        # # After gathering, Q values becomes [batch-size x hist-len x 1] then
+        # # after squeeze becomes [batch-size x hist-len]
+        # if self.history:
+        #     q_values = q_values.gather(2, actions).squeeze()
+        # else:
+        #     q_values = q_values[:, -1, :].gather(1, actions[:, -1, :]).squeeze()
 
         with torch.no_grad():
             # Next obss goes from [batch-size x hist-len x obs-dim] to
             # [batch-size x hist-len x n-actions] and then goes through gather and squeeze
             # to become [batch-size x hist-len]
             if self.history:
-                argmax = torch.argmax(self.policy_network(next_obss), axis=2).unsqueeze(
-                    -1
-                )
-                next_obs_q_values = self.target_network(next_obss)
-                next_obs_q_values = next_obs_q_values.gather(2, argmax).squeeze()
+                # argmax = torch.argmax(self.policy_network(next_obss), axis=2).unsqueeze(
+                #     -1
+                # )
+                # next_obs_q_values = self.target_network(next_obss)
+                # next_obs_q_values = next_obs_q_values.gather(2, argmax).squeeze()
+
+                next_predicted_actions = self.policy_network.predict_actions(next_obss)
+                next_obs_q_values = self.target_network.predict_q_values(next_obss, next_predicted_actions).squeeze()
+
+
             else:
-                argmax = torch.argmax(
-                    self.policy_network(next_obss)[:, -1, :], axis=1
-                ).unsqueeze(-1)
-                next_obs_q_values = (
-                    self.target_network(next_obss)[:, -1, :].gather(1, argmax).squeeze()
-                )
+                # predicted_actions = torch.argmax(
+                #     self.policy_network(next_obss)[:, -1, :], axis=1
+                # ).unsqueeze(-1)
+                # next_obs_q_values = (
+                #     self.target_network(next_obss)[:, -1, :].gather(1, argmax).squeeze()
+                # )
+
+                next_predicted_actions = self.policy_network.predict_actions(next_obss)[:, -1, :]
+                next_obs_q_values = self.target_network.predict_q_values(next_obss, next_predicted_actions)[:, -1, :].squeeze()
 
             # here goes BELLMAN
             if self.history:
@@ -338,6 +367,11 @@ class DtqnAgent(DqnAgent):
                     1 - dones[:, -1, :].squeeze()
                 ) * (next_obs_q_values * self.gamma)
 
+
+
+
+
+
         self.qvalue_max[self.num_steps % len(self.qvalue_max)] = q_values.max()
         self.qvalue_mean[self.num_steps % len(self.qvalue_mean)] = q_values.mean()
         self.qvalue_min[self.num_steps % len(self.qvalue_min)] = q_values.min()
@@ -345,18 +379,51 @@ class DtqnAgent(DqnAgent):
         self.target_mean[self.num_steps % len(self.target_mean)] = targets.mean()
         self.target_min[self.num_steps % len(self.target_min)] = targets.min()
 
-        loss = F.mse_loss(q_values, targets)
-        self.td_errors[self.num_steps % len(self.td_errors)] = loss
-        self.optimizer.zero_grad(set_to_none=True)
-        loss.backward()
+
+
+        ########### UPDATE CRITIC 
+        ########### TO-DO: think how grads flow!
+
+        critic_loss = F.mse_loss(q_values, targets)
+
+
+        self.td_errors[self.num_steps % len(self.td_errors)] = critic_loss
+
+
+        self.critic_optimizer.zero_grad(set_to_none=True)
+        critic_loss.backward()
+
         norm = torch.nn.utils.clip_grad_norm_(
             self.policy_network.parameters(),
             self.grad_norm_clip,
             error_if_nonfinite=True,
         )
-        self.grad_norms[self.num_steps % len(self.grad_norms)] = norm
 
-        self.optimizer.step()
+        #self.grad_norms[self.num_steps % len(self.grad_norms)] = norm
+
+        self.critic_optimizer.step()
+
+        ########### UPDATE ACTOR
+
+        predicted_actions = self.policy_network.predict_actions(obss)
+        actor_loss = -self.policy_network.predict_q_values(obss, predicted_actions).mean()
+    
+
+        self.actor_loss[self.num_steps % len(self.td_errors)] = actor_loss
+
+        self.actor_optimizer.zero_grad(set_to_none=True)
+
+        actor_loss.backward()
+
+        norm = torch.nn.utils.clip_grad_norm_(
+            self.policy_network.parameters(),
+            self.grad_norm_clip,
+            error_if_nonfinite=True,
+        )
+
+        self.grad_norms[self.num_steps % len(self.grad_norms)] = norm
+        self.actor_optimizer.step()
+
         self.num_steps += 1
 
     def target_update(self) -> None:
@@ -418,3 +485,101 @@ class DtqnAgent(DqnAgent):
             total_reward / n_episode,
             total_steps / n_episode,
         )
+
+    def save_mini_checkpoint(self, wandb_id: str, checkpoint_dir: str) -> None:
+        torch.save(
+            {"step": self.num_steps, "wandb_id": wandb_id},
+            checkpoint_dir + "_mini_checkpoint.pt",
+        )
+
+    def load_mini_checkpoint(self, checkpoint_dir: str) -> dict:
+        return torch.load(checkpoint_dir + "_mini_checkpoint.pt")
+
+    def save_checkpoint(self, wandb_id: str, checkpoint_dir: str) -> None:
+        self.save_mini_checkpoint(wandb_id=wandb_id, checkpoint_dir=checkpoint_dir)
+        torch.save(
+            {
+                "step": self.num_steps,
+                "episode": self.current_episode,
+                "eval": self.num_evals,
+                "wandb_id": wandb_id,
+                # Replay Buffer
+                "replay_buffer_pos": self.replay_buffer.pos,
+                "replay_buffer_obss": self.replay_buffer.obss,
+                "replay_buffer_next_obss": self.replay_buffer.next_obss,
+                "replay_buffer_actions": self.replay_buffer.actions,
+                "replay_buffer_rewards": self.replay_buffer.rewards,
+                "replay_buffer_dones": self.replay_buffer.dones,
+                "replay_buffer_episode_lengths": self.replay_buffer.episode_lengths,
+                # Neural Net
+                "policy_net_state_dict": self.policy_network.state_dict(),
+                "target_net_state_dict": self.target_network.state_dict(),
+                "critic_optimizer_state_dict": self.critic_optimizer.state_dict(),
+                "actor_optimizer_state_dict": self.actor_optimizer.state_dict(),
+                "epsilon": self.exp_coef.val,
+                # Results
+                "episode_rewards": self.episode_rewards,
+                "episode_successes": self.episode_successes,
+                "episode_lengths": self.episode_lengths,
+                # Losses
+                "td_errors": self.td_errors,
+                "actor_loss": self.actor_loss,
+                "grad_norms": self.grad_norms,
+                "qvalue_max": self.qvalue_max,
+                "qvalue_mean": self.qvalue_mean,
+                "qvalue_min": self.qvalue_min,
+                "target_max": self.target_max,
+                "target_mean": self.target_mean,
+                "target_min": self.target_min,
+                # RNG states
+                "random_rng_state": random.getstate(),
+                "numpy_rng_state": np.random.get_state(),
+                "torch_rng_state": torch.get_rng_state(),
+                "torch_cuda_rng_state": torch.cuda.get_rng_state()
+                if torch.cuda.is_available()
+                else torch.get_rng_state(),
+            },
+            checkpoint_dir + "_checkpoint.pt",
+        )
+
+    def load_checkpoint(self, checkpoint_dir: str) -> None:
+        checkpoint = torch.load(checkpoint_dir + "_checkpoint.pt")
+
+        self.num_steps = checkpoint["step"]
+        self.current_episode = checkpoint["episode"]
+        self.num_evals = checkpoint["eval"]
+        # Replay Buffer
+        self.replay_buffer.pos = checkpoint["replay_buffer_pos"]
+        self.replay_buffer.obss = checkpoint["replay_buffer_obss"]
+        self.replay_buffer.next_obss = checkpoint["replay_buffer_next_obss"]
+        self.replay_buffer.actions = checkpoint["replay_buffer_actions"]
+        self.replay_buffer.rewards = checkpoint["replay_buffer_rewards"]
+        self.replay_buffer.dones = checkpoint["replay_buffer_dones"]
+        self.replay_buffer.episode_lengths = checkpoint["replay_buffer_episode_lengths"]
+        # Neural Net
+        self.policy_network.load_state_dict(checkpoint["policy_net_state_dict"])
+        self.target_network.load_state_dict(checkpoint["target_net_state_dict"])
+        self.critic_optimizer.load_state_dict(checkpoint["critic_optimizer_state_dict"])
+        self.actor_optimizer.load_state_dict(checkpoint["actor_optimizer_state_dict"])
+        # Results
+        self.episode_rewards = checkpoint["episode_rewards"]
+        self.episode_successes = checkpoint["episode_successes"]
+        self.episode_lengths = checkpoint["episode_lengths"]
+        # Losses
+        self.td_errors = checkpoint["td_errors"]
+        self.actor_loss = checkpoint["actor_loss"]
+        self.grad_norms = checkpoint["grad_norms"]
+        self.qvalue_max = checkpoint["qvalue_max"]
+        self.qvalue_mean = checkpoint["qvalue_mean"]
+        self.qvalue_min = checkpoint["qvalue_min"]
+        self.target_max = checkpoint["target_max"]
+        self.target_mean = checkpoint["target_mean"]
+        self.target_min = checkpoint["target_min"]
+        # RNG states
+        random.setstate(checkpoint["random_rng_state"])
+        np.random.set_state(checkpoint["numpy_rng_state"])
+        torch.set_rng_state(checkpoint["torch_rng_state"])
+        if torch.cuda.is_available():
+            torch.cuda.set_rng_state(checkpoint["torch_cuda_rng_state"])
+
+        return checkpoint["wandb_id"]

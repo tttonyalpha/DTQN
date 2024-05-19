@@ -1,4 +1,6 @@
 from dtqn.networks.dtqn import DTQN
+from dtqn.networks.tdpg import TDPG
+
 from dtqn.networks.drqn import DRQN
 from dtqn.networks.dqn import DQN
 

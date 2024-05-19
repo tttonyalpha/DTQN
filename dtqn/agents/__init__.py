@@ -3,3 +3,6 @@ from dtqn.agents.drqn import DrqnAgent
 from dtqn.agents.dqn import DqnAgent
 
 from dtqn.agents.adrqn import AdrqnAgent
+
+from dtqn.agents.tdpg import TdpgAgent
+

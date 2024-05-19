@@ -21,12 +21,12 @@ def sinusoidal_pos(
     return pos_encoding
 
 
-class DTQN(nn.Module):
-    """Deep Transformer Q-Network for partially observable reinforcement learning.
+class TDPG(nn.Module):
+    """Transformer Deep Policy Gradient for POMDP.
 
     Args:
         obs_dim: The length of the observation vector.
-        num_actions: The number of possible environments actions.
+        action_dim: The dimention of actions space.
         embed_per_obs_dim: Used for discrete observation space. Length of the embed for each
             element in the observation dimension.
         inner_embed_size: The dimensionality of the network. Referred to as d_k by the
@@ -48,7 +48,7 @@ class DTQN(nn.Module):
     def __init__(
         self,
         obs_dim: int,
-        num_actions: int,
+        action_dim: int,
         embed_per_obs_dim: int,
         inner_embed_size: int,
         num_heads: int,
@@ -119,10 +119,37 @@ class DTQN(nn.Module):
         )
 
         self.layernorm = nn.LayerNorm(inner_embed_size)
-        self.ffn = nn.Sequential(
+
+        self.actor = nn.Sequential(
             nn.Linear(inner_embed_size, inner_embed_size),
             nn.ReLU(),
-            nn.Linear(inner_embed_size, num_actions),
+            nn.Linear(inner_embed_size, 2*inner_embed_size),
+            nn.ReLU(),
+            nn.Linear(2*inner_embed_size, inner_embed_size),
+            nn.ReLU(),
+            nn.Linear(inner_embed_size, action_dim),
+            nn.Tanh()
+        )
+
+        # self.determenistic_actor = nn.Sequential(
+        #     nn.Linear(inner_embed_size, inner_embed_size),
+        #     nn.ReLU(),
+        #     nn.Linear(inner_embed_size, 2*inner_embed_size),
+        #     nn.ReLU(),
+        #     nn.Linear(2*inner_embed_size, inner_embed_size),
+        #     nn.ReLU(),
+        #     nn.Linear(inner_embed_size, action_dim),
+        #     nn.Tanh()
+        # )
+
+        self.critic = nn.Sequential(
+            nn.Linear(inner_embed_size + action_dim, inner_embed_size),
+            nn.ReLU(),
+            nn.Linear(inner_embed_size, 2*inner_embed_size),
+            nn.ReLU(),
+            nn.Linear(2*inner_embed_size, inner_embed_size),
+            nn.ReLU(),
+            nn.Linear(inner_embed_size, 1),
         )
 
         self.history_len = history_len
@@ -141,7 +168,8 @@ class DTQN(nn.Module):
             module.bias.data.zero_()
             module.weight.data.fill_(1.0)
 
-    def forward(self, obss: torch.Tensor) -> torch.Tensor:
+
+    def predict_q_values(self, obss: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
         batch, history_len, obs_dim = obss.size()
         assert (
             history_len <= self.history_len
@@ -150,7 +178,28 @@ class DTQN(nn.Module):
             obs_dim == self.obs_dim
         ), f"Obs dim is incorrect. Expected {self.obs_dim} got {obs_dim}"
 
-        print(obss.size(), self.obs_embedding)
+        token_embeddings = self.obs_embedding(obss)
+        # batch_size x hist_len x inner_emb_dim
+        x = self.dropout(token_embeddings + self.position_embedding[:, :history_len, :])
+        # Send through transformer
+        x = self.transformer_layers(x)
+        # Norm and run through a linear layer to get to action space
+        x = self.layernorm(x) # get observetion embeddings
+
+        # do I need embedd actions before concat to obs embeddings? 
+
+        return self.critic(torch.cat([x, actions], 2)) # concat 
+
+
+    def predict_actions(self, obss: torch.Tensor) -> torch.Tensor:
+        batch, history_len, obs_dim = obss.size()
+        assert (
+            history_len <= self.history_len
+        ), "Cannot forward, history is longer than expected."
+        assert (
+            obs_dim == self.obs_dim
+        ), f"Obs dim is incorrect. Expected {self.obs_dim} got {obs_dim}"
+
         token_embeddings = self.obs_embedding(obss)
         # batch_size x hist_len x obs_dim
         x = self.dropout(token_embeddings + self.position_embedding[:, :history_len, :])
@@ -158,4 +207,4 @@ class DTQN(nn.Module):
         x = self.transformer_layers(x)
         # Norm and run through a linear layer to get to action space
         x = self.layernorm(x)
-        return self.ffn(x)
+        return self.actor(x)

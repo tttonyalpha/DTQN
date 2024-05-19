@@ -8,13 +8,13 @@ from utils import random, agent_utils, env_processing, logging_utils
 # envs
 import gym, envs
 
-
 try:
     import gym_pomdps
 except ImportError:
     print(
         "WARNING: ``gym_pomdps`` is not installed. This means you cannot run an experiment with the HeavenHell or Hallway domain."
     )
+
 
 def run_experiment(args):
     start_time = time.time()

@@ -69,7 +69,7 @@ class CarFlag(gym.Env):
         self.np_random = None
 
     def seed(self, seed):
-        super().seed(seed)
+        #super().seed(seed)
         if self.np_random is None:
             seed_seq = np.random.SeedSequence(seed)
             self.np_random = Generator(np.random.PCG64(seed_seq))

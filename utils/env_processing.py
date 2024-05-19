@@ -4,6 +4,9 @@ from gym.wrappers.time_limit import TimeLimit
 import numpy as np
 from typing import Union
 
+# import rlbench.gym
+
+
 try:
     from gym_gridverse.gym import GymEnvironment
     from gym_gridverse.envs.yaml.factory import factory_env_from_yaml
@@ -19,6 +22,9 @@ except ImportError:
         f"WARNING: ``gym_gridverse`` is not installed. This means you cannot run an experiment with the `gv_*` domains."
     )
     GymEnvironment = None
+
+
+
 from envs.gv_wrapper import GridVerseWrapper
 import os
 from enum import Enum
